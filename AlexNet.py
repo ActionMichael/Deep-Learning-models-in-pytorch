@@ -14,7 +14,7 @@ from torchvision import datasets
 from torchvision import transforms
 from torch.utils.data import DataLoader
 
-# Local Response Normalization (LRN)區域性響應值歸一化層
+# Local Response Normalization (LRN)區域性響應值歸一化層，這裡不太懂~~
 # 這個網路貌似後續被其它正則化手段代替，如dropout、batch normalization等。
 # 目前該網路基本上很少使用了，這為了原生的AlexNet而實現
 #https://kknews.cc/zh-tw/other/4k8gg4x.html
