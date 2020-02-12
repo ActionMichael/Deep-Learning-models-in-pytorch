@@ -124,3 +124,20 @@ for images, labels in test_loader:
     pass
 print(labels[:10])
 
+
+
+##########################
+### MODEL
+##########################
+
+# The following code cell that implements the DenseNet-121 architecture 
+# is a derivative of the code provided at 
+# https://github.com/pytorch/vision/blob/master/torchvision/models/densenet.py
+
+import re
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.utils.checkpoint as cp
+from collections import OrderedDict
+
