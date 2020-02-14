@@ -141,3 +141,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as cp
 from collections import OrderedDict
 
+
+def _bn_function_factory(norm , relu , conv):
+    def bn_function(*input):
+        
