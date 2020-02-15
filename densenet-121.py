@@ -141,7 +141,34 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as cp
 from collections import OrderedDict
 
-
+#拼接之前dense_layer層特徵，且返回一層dense_layer
 def _bn_function_factory(norm , relu , conv):
+    #(*input)不懂
     def bn_function(*input):
+        #將兩個張量（tensor）拼接在一起
+        #dim表示以哪個维度連接，dim=0為横向連接；dim=1為縱向連接
+        concate_features = torch.cat(input , 1)
+        #頸縮張量BN->ReLU->1x1Conv
+        bottleneck_output = conv(relu(norm(concate_features)))
+        return bottleneck_output
+    
+    return bn_function
+
+#卷積block:BN->ReLU->1x1Conv->BN->ReLU->3x3Conv
+class _DenseLayer(nn.Module):
+    #初始"memory_efficient=False"不懂
+    def __init__(self , num_input_features , growth_rate , bn_size , drop_rate , memory_efficient=False):
+        #繼承初始化之上述
+        super(_DenseLayer , self).__init__()
+        self.add_module('norm1' , nn.BatchNorm2d(num_input_features)),
+        self.add_module('relu1' , nn.ReLU(inplace=True)),
+        self.add_module('conv1' , nn.Conv2d(num_input_features , bn_size*growth_rate , 
+                                            kernel_size=1 , strid=1 , bias=False)),
+        self.add_module('norm2' , nn.BatchNorm2d(bn_size*growth_rate)),
+        self.add_module('relu2' , nn.ReLU(inplace=True)),
+        self.add_module('conv2' , nn.Conv2d(bn_size*growth_rate , growth_rate , 
+                                            kernel_size=3 , stride=1 , padding=1 , bias=False)),
+        self.drop_rate = drop_rate
+        self.memory_efficient = memory_efficient
         
+    
