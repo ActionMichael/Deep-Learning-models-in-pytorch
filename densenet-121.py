@@ -160,6 +160,7 @@ class _DenseLayer(nn.Module):
     def __init__(self , num_input_features , growth_rate , bn_size , drop_rate , memory_efficient=False):
         #繼承初始化之上述
         super(_DenseLayer , self).__init__()
+        
         self.add_module('norm1' , nn.BatchNorm2d(num_input_features)),
         self.add_module('relu1' , nn.ReLU(inplace=True)),
         self.add_module('conv1' , nn.Conv2d(num_input_features , bn_size*growth_rate , 
