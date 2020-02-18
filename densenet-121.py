@@ -155,9 +155,16 @@ def _bn_function_factory(norm , relu , conv):
     return bn_function
 
 #卷積block:BN->ReLU->1x1Conv->BN->ReLU->3x3Conv
+#DenseBlock中的內部結構
 class _DenseLayer(nn.Module):
+    """Basic unit of DenseBlock (using bottleneck layer) """
     #初始"memory_efficient=False"不懂
     def __init__(self , num_input_features , growth_rate , bn_size , drop_rate , memory_efficient=False):
+        #num_input_features:輸入特徵圖個數
+        #growth_rate:增長速率，第二個卷積層輸出特徵圖
+        #growth_rate * bn_size:第一個卷積層輸出特徵圖
+        #drop_rate:dropout丟掉率
+
         #繼承初始化之上述
         super(_DenseLayer , self).__init__()
         
