@@ -167,16 +167,37 @@ class _DenseLayer(nn.Module):
 
         #繼承初始化之上述
         super(_DenseLayer , self).__init__()
-        
+        #本體~~~
         self.add_module('norm1' , nn.BatchNorm2d(num_input_features)),
         self.add_module('relu1' , nn.ReLU(inplace=True)),
         self.add_module('conv1' , nn.Conv2d(num_input_features , bn_size*growth_rate , 
                                             kernel_size=1 , strid=1 , bias=False)),
         self.add_module('norm2' , nn.BatchNorm2d(bn_size*growth_rate)),
         self.add_module('relu2' , nn.ReLU(inplace=True)),
+        ##padding=1所以特徵圖大小一致
         self.add_module('conv2' , nn.Conv2d(bn_size*growth_rate , growth_rate , 
                                             kernel_size=3 , stride=1 , padding=1 , bias=False)),
         self.drop_rate = drop_rate
         self.memory_efficient = memory_efficient
-        
+    
+    #法一
+    def forward(self, x):
+        new_features = super(_DenseLayer, self).forward(x)
+        if self.drop_rate > 0:
+            new_features = F.dropout(new_features, p=self.drop_rate, training=self.training)
+        return torch.cat([x, new_features], 1)
+    
+    #法二，法一與法二差別在哪??
+    #def forward(self, *prev_features):
+    #    bn_function = _bn_function_factory(self.norm1, self.relu1, self.conv1)
+    #    #if....節省顯示卡內存
+    #    if self.efficient and any(prev_feature.requires_grad for prev_feature in prev_features):
+    #        bottleneck_output = cp.checkpoint(bn_function, *prev_features)
+    #    else:
+    #        bottleneck_output = bn_function(*prev_features)
+    #    new_features = self.conv2(self.relu2(self.norm2(bottleneck_output)))
+    #    if self.drop_rate > 0:
+    #        new_features = F.dropout(new_features, p=self.drop_rate, training=self.training)
+    #    return new_features
+
     
