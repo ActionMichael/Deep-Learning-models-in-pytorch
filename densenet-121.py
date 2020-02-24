@@ -167,11 +167,11 @@ class _DenseLayer(nn.Module):
 
         #繼承初始化之上述
         super(_DenseLayer , self).__init__()
-        #本體~~~
+        #本體~~~我們使用bottleneck結構
         self.add_module('norm1' , nn.BatchNorm2d(num_input_features)),
         self.add_module('relu1' , nn.ReLU(inplace=True)),
         self.add_module('conv1' , nn.Conv2d(num_input_features , bn_size*growth_rate , 
-                                            kernel_size=1 , strid=1 , bias=False)),
+                                            kernel_size=1 , stride=1 , bias=False)),
         self.add_module('norm2' , nn.BatchNorm2d(bn_size*growth_rate)),
         self.add_module('relu2' , nn.ReLU(inplace=True)),
         ##padding=1所以特徵圖大小一致
@@ -179,25 +179,257 @@ class _DenseLayer(nn.Module):
                                             kernel_size=3 , stride=1 , padding=1 , bias=False)),
         self.drop_rate = drop_rate
         self.memory_efficient = memory_efficient
-    
-    #法一
-    def forward(self, x):
-        new_features = super(_DenseLayer, self).forward(x)
+        
+    #法一、正向傳遞，但是(*prev_features)不懂
+    def forward(self, *prev_features):
+        #(bn=BatchNorm2d)呼叫"_bn_function_factory"函式來實現"conv(relu(norm(concate_features)))"
+        bn_function = _bn_function_factory(self.norm1 , self.relu1 , self.conv1)
+        #節省顯示卡記憶體(看不懂~~~)
+        if self.memory_efficient and any(prev_feature.requires_grad for prev_feature in prev_features):
+            bottleneck_output = cp.checkpoint(bn_function , *prev_features)
+        else:
+            bottleneck_output = bn_function(*prev_features)
+        #正向傳遞第二部分，因為上行"bottleneck_output"乘載了bn_function了所以沿用，套入第"2"部分
+        new_features = self.conv2(self.relu2(self.norm2(bottleneck_output)))
+        #導入drop-out，使梯度不會over爆炸及稀釋消失
         if self.drop_rate > 0:
-            new_features = F.dropout(new_features, p=self.drop_rate, training=self.training)
-        return torch.cat([x, new_features], 1)
+            new_features = F.dropout(new_features , p=self.drop_rate , training=self.training)
+        return new_features
     
-    #法二，法一與法二差別在哪??
-    #def forward(self, *prev_features):
-    #    bn_function = _bn_function_factory(self.norm1, self.relu1, self.conv1)
-    #    #if....節省顯示卡內存
-    #    if self.efficient and any(prev_feature.requires_grad for prev_feature in prev_features):
-    #        bottleneck_output = cp.checkpoint(bn_function, *prev_features)
-    #    else:
-    #        bottleneck_output = bn_function(*prev_features)
-    #    new_features = self.conv2(self.relu2(self.norm2(bottleneck_output)))
+    #法二，看起來相對法一清楚明瞭，但運作起來出現"NotImplementedError"
+    #def forward(self, x):
+    #    new_features = super(_DenseLayer, self).forward(x)
     #    if self.drop_rate > 0:
     #        new_features = F.dropout(new_features, p=self.drop_rate, training=self.training)
-    #    return new_features
+    #    return torch.cat([x, new_features], 1)
 
+
+#法一、實現DenseBlock模塊，內部是密集連接方式(輸入特徵數線性增長)：
+class _DenseBlock(nn.Module):
+    "num_layers:每個block内dense layer層數"
+    def __init__(self , num_layers , num_input_features , bn_size , growth_rate , drop_rate , memory_efficient=False):
+        super(_DenseBlock , self).__init__()
+        for i in range(num_layers):
+            layer = _DenseLayer(
+                num_input_features + i * growth_rate,
+                growth_rate=growth_rate,
+                bn_size=bn_size,
+                drop_rate=drop_rate,
+                memory_efficient=memory_efficient,
+            )
+            self.add_module('denselayer%d' % (i + 1) , layer)
+
+    def forward(self , init_features):
+        features = [init_features]
+        for name, layer in self.named_children():
+            new_features = layer(*features)
+            features.append(new_features)
+        return torch.cat(features , 1)
+
+#法二、
+#class _DenseBlock(nn.Sequential):
+#    def __init__(self, num_layers, num_input_features, bn_size, growth_rate, drop_rate):
+#"num_layers:每個block内dense layer層數"
+#        super(_DenseBlock, self).__init__()
+#        for i in range(num_layers):
+#            layer = _DenseLayer(num_input_features + i * growth_rate, growth_rate, bn_size, drop_rate)
+#            self.add_module('denselayer%d' % (i + 1), layer)
+
+
+class _Transition(nn.Sequential):
+    def __init__(self, num_input_features, num_output_features):
+        super(_Transition, self).__init__()
+        self.add_module('norm', nn.BatchNorm2d(num_input_features))
+        self.add_module('relu', nn.ReLU(inplace=True))
+        self.add_module('conv', nn.Conv2d(num_input_features, num_output_features,
+                                          kernel_size=1, stride=1, bias=False))
+        self.add_module('pool', nn.AvgPool2d(kernel_size=2, stride=2))
+
+
+class DenseNet121(nn.Module):
+    r"""Densenet-BC model class, based on
+    `"Densely Connected Convolutional Networks" <https://arxiv.org/pdf/1608.06993.pdf>`_
+
+    Args:
+        growth_rate (int) - how many filters to add each layer (`k` in paper)
+        block_config (list of 4 ints) - how many layers in each pooling block
+        num_init_featuremaps (int) - the number of filters to learn in the first convolution layer
+        bn_size (int) - multiplicative factor for number of bottle neck layers
+          (i.e. bn_size * k features in the bottleneck layer)
+        drop_rate (float) - dropout rate after each dense layer
+        num_classes (int) - number of classification classes
+        memory_efficient (bool) - If True, uses checkpointing. Much more memory efficient,
+          but slower. Default: *False*. See `"paper" <https://arxiv.org/pdf/1707.06990.pdf>`_
+    """
+
+    def __init__(self, growth_rate=32, block_config=(6, 12, 24, 16),
+                 num_init_featuremaps=64, bn_size=4, drop_rate=0, num_classes=1000, memory_efficient=False,
+                 grayscale=False):
+
+        super(DenseNet121, self).__init__()
+
+        # First convolution
+        if grayscale:
+            in_channels=1
+        else:
+            in_channels=3
+        
+        self.features = nn.Sequential(OrderedDict([
+            ('conv0', nn.Conv2d(in_channels=in_channels, out_channels=num_init_featuremaps,
+                                kernel_size=7, stride=2,
+                                padding=3, bias=False)), # bias is redundant when using batchnorm
+            ('norm0', nn.BatchNorm2d(num_features=num_init_featuremaps)),
+            ('relu0', nn.ReLU(inplace=True)),
+            ('pool0', nn.MaxPool2d(kernel_size=3, stride=2, padding=1)),
+        ]))
+
+        # Each denseblock
+        num_features = num_init_featuremaps
+        for i, num_layers in enumerate(block_config):
+            block = _DenseBlock(
+                num_layers=num_layers,
+                num_input_features=num_features,
+                bn_size=bn_size,
+                growth_rate=growth_rate,
+                drop_rate=drop_rate,
+                memory_efficient=memory_efficient
+            )
+            self.features.add_module('denseblock%d' % (i + 1), block)
+            num_features = num_features + num_layers * growth_rate
+            if i != len(block_config) - 1:
+                trans = _Transition(num_input_features=num_features,
+                                    num_output_features=num_features // 2)
+                self.features.add_module('transition%d' % (i + 1), trans)
+                num_features = num_features // 2
+
+        # Final batch norm
+        self.features.add_module('norm5', nn.BatchNorm2d(num_features))
+
+        # Linear layer
+        self.classifier = nn.Linear(num_features, num_classes)
+
+        # Official init from torch repo.
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        features = self.features(x)
+        out = F.relu(features, inplace=True)
+        out = F.adaptive_avg_pool2d(out, (1, 1))
+        out = torch.flatten(out, 1)
+        logits = self.classifier(out)
+        probas = F.softmax(logits, dim=1)
+        return logits, probas
+
+torch.manual_seed(RANDOM_SEED)
+
+model = DenseNet121(num_classes=NUM_CLASSES, grayscale=GRAYSCALE)
+model.to(DEVICE)
+
+optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
+def compute_acc(model, data_loader, device):
+    correct_pred, num_examples = 0, 0
+    model.eval()
+    for i, (features, targets) in enumerate(data_loader):
+            
+        features = features.to(device)
+        targets = targets.to(device)
+
+        logits, probas = model(features)
+        _, predicted_labels = torch.max(probas, 1)
+        num_examples += targets.size(0)
+        assert predicted_labels.size() == targets.size()
+        correct_pred += (predicted_labels == targets).sum()
+    return correct_pred.float()/num_examples * 100
+
+start_time = time.time()
+
+cost_list = []
+train_acc_list, valid_acc_list = [], []
+
+
+for epoch in range(NUM_EPOCHS):
     
+    model.train()
+    for batch_idx, (features, targets) in enumerate(train_loader):
+        
+        features = features.to(DEVICE)
+        targets = targets.to(DEVICE)
+            
+        ### FORWARD AND BACK PROP
+        logits, probas = model(features)
+        cost = F.cross_entropy(logits, targets)
+        optimizer.zero_grad()
+        
+        cost.backward()
+        
+        ### UPDATE MODEL PARAMETERS
+        optimizer.step()
+        
+        #################################################
+        ### CODE ONLY FOR LOGGING BEYOND THIS POINT
+        ################################################
+        cost_list.append(cost.item())
+        if not batch_idx % 150:
+            print (f'Epoch: {epoch+1:03d}/{NUM_EPOCHS:03d} | '
+                   f'Batch {batch_idx:03d}/{len(train_loader):03d} |' 
+                   f' Cost: {cost:.4f}')
+
+        
+
+    model.eval()
+    with torch.set_grad_enabled(False): # save memory during inference
+        
+        train_acc = compute_acc(model, train_loader, device=DEVICE)
+        valid_acc = compute_acc(model, valid_loader, device=DEVICE)
+        
+        print(f'Epoch: {epoch+1:03d}/{NUM_EPOCHS:03d}\n'
+              f'Train ACC: {train_acc:.2f} | Validation ACC: {valid_acc:.2f}')
+        
+        train_acc_list.append(train_acc)
+        valid_acc_list.append(valid_acc)
+        
+    elapsed = (time.time() - start_time)/60
+    print(f'Time elapsed: {elapsed:.2f} min')
+  
+elapsed = (time.time() - start_time)/60
+print(f'Total Training Time: {elapsed:.2f} min')
+
+plt.plot(cost_list, label='Minibatch cost')
+plt.plot(np.convolve(cost_list, 
+                     np.ones(200,)/200, mode='valid'), 
+         label='Running average')
+
+plt.ylabel('Cross Entropy')
+plt.xlabel('Iteration')
+plt.legend()
+plt.show()
+
+plt.plot(np.arange(1, NUM_EPOCHS+1), train_acc_list, label='Training')
+plt.plot(np.arange(1, NUM_EPOCHS+1), valid_acc_list, label='Validation')
+
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.show()
+
+
+with torch.set_grad_enabled(False):
+    test_acc = compute_acc(model=model,
+                           data_loader=test_loader,
+                           device=DEVICE)
+    
+    valid_acc = compute_acc(model=model,
+                            data_loader=valid_loader,
+                            device=DEVICE)
+    
+
+print(f'Validation ACC: {valid_acc:.2f}%')
+print(f'Test ACC: {test_acc:.2f}%')    
