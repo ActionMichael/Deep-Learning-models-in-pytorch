@@ -4,6 +4,12 @@ Created on Tue Jan 28 22:24:25 2020
 
 @author: User
 """
+"""
+有如下優點：
+（1）由於存在很多跳連，減輕了空梯度問題，加強了梯度和信息流動，更容易訓練。
+（2）加強了特徵的重用。
+（3）DenseNet層的filter數量比較少，使得層比較狹窄。每層只生成了很小的特徵圖，成為共同知識中的一員。這樣網絡的參數更少，且更有效率。
+"""
 
 import os
 import time
@@ -205,6 +211,24 @@ class _DenseLayer(nn.Module):
 
 
 #法一、實現DenseBlock模塊，內部是密集連接方式(輸入特徵數線性增長)：
+#num_input_features:輸入特徵圖個數
+#growth_rate:增長速率，第二個卷積層輸出特徵圖
+"""
+Dense Block有L層dense layer組成
+layer 0:輸入（56 * 56 * 64）->輸出（56 * 56 * 32）
+layer 1:輸入（56 * 56 (32 * 1))->輸出（56 * 56 * 32）
+layer 2:輸入（56 * 56 (32 * 2))->輸出（56 * 56 * 32）
+…
+layer L:輸入（56 * 56 * (32 * L))->輸出（56 * 56 * 32）
+
+注意，L層dense layer的輸出都是不變的，而每層的輸入channel數是增加的，
+因為如上所述，每層的輸入是前面所有層的拼接。
+在一個DenseBlock裡面，每個非線性變換H輸出的channels數為恆定的Growth_rate，
+那麼第i層的輸入的channels數便是num_input_features + i*Growth_rate, num_input_features為Input
+的channels數，比如，假設我們把Growth_rate設為4，
+上圖中H1的輸入的size為8 * 32 * 32，輸出為4 * 32 * 32， 則H2的輸入的size為12 * 32 * 32，
+輸出還是4 * 32 * 32，H3、H4以此類推，在實驗中，用較小的Growth_rate就能實現較好的效果。
+"""
 class _DenseBlock(nn.Module):
     "num_layers:每個block内dense layer層數"
     def __init__(self , num_layers , num_input_features , bn_size , growth_rate , drop_rate , memory_efficient=False):
